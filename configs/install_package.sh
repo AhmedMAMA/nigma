@@ -1,5 +1,6 @@
+```bash
 #!/usr/bin/env bash
-# install_yolo_jetson.sh
+# install_yolo_jetson.sh (compatible JetPack 4 & 5)
 
 set -Eeuo pipefail
 trap 'echo "❌ Erreur ligne $LINENO"; exit 1' ERR
@@ -26,25 +27,29 @@ else
     exit 1
 fi
 
-# --- Vérifier JetPack ---
-if (( L4T_RELEASE < 35 )); then
-    echo "❌ JetPack trop ancien (>= 5 requis)"
+# --- Détecter version JetPack ---
+if (( L4T_RELEASE < 32 )); then
+    echo "❌ Version JetPack trop ancienne (>= 4 requis)"
     exit 1
+elif (( L4T_RELEASE < 35 )); then
+    echo "⚠️ JetPack 4 détecté (mode compatibilité)"
+    JETPACK_VERSION=4
+else
+    echo "✅ JetPack 5+ détecté"
+    JETPACK_VERSION=5
 fi
 
 # --- Version Python ---
 read MAJOR MINOR <<< "$(python3 -c 'import sys; print(sys.version_info.major, sys.version_info.minor)')"
 
-if (( MAJOR > 3 || (MAJOR == 3 && MINOR >= 8) )); then
+if (( JETPACK_VERSION == 4 )); then
+    echo "⚠️ JetPack 4 → utilisation Python système"
+    PYTHON=python3
+elif (( MAJOR > 3 || (MAJOR == 3 && MINOR >= 8) )); then
     PYTHON=python3
 else
-    echo "⚠️ Python trop ancien → tentative python3.10"
-    if command -v python3.10 >/dev/null; then
-        PYTHON=python3.10
-    else
-        echo "❌ python3.10 requis"
-        exit 1
-    fi
+    echo "❌ Python >= 3.8 requis"
+    exit 1
 fi
 
 echo "✅ Python utilisé : $($PYTHON --version)"
@@ -61,8 +66,8 @@ echo "📦 Mise à jour système..."
 sudo apt-get update
 sudo apt-get upgrade -y
 
-# --- OpenCV Jetson (CUDA) ---
-echo "📸 Installation OpenCV optimisé Jetson..."
+# --- OpenCV Jetson ---
+echo "📸 Installation OpenCV..."
 sudo apt-get install -y python3-opencv
 
 # --- Création environnement ---
@@ -80,17 +85,27 @@ source "$ENV_NAME/bin/activate"
 # --- Upgrade pip ---
 python -m pip install --upgrade pip setuptools wheel
 
-# --- PyTorch NVIDIA (CRUCIAL) ---
-echo "🔥 Installation PyTorch NVIDIA (GPU Jetson)..."
-pip install --no-cache-dir torch torchvision torchaudio \
-    --extra-index-url https://developer.download.nvidia.com/compute/redist/jp/v5
+# --- PyTorch NVIDIA ---
+echo "🔥 Installation PyTorch NVIDIA..."
+
+if (( JETPACK_VERSION == 5 )); then
+    pip install --no-cache-dir torch torchvision torchaudio \
+        --extra-index-url https://developer.download.nvidia.com/compute/redist/jp/v5
+else
+    echo "⚠️ Installation PyTorch compatible JetPack 4"
+    pip install --no-cache-dir numpy==1.19.4
+    pip install --no-cache-dir torch==1.10.0 torchvision==0.11.1
+fi
 
 # --- Vérification CUDA ---
 echo "🔍 Vérification CUDA PyTorch..."
 python - <<EOF
 import torch
 print("CUDA disponible :", torch.cuda.is_available())
-print("GPU :", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "Aucun")
+if torch.cuda.is_available():
+    print("GPU :", torch.cuda.get_device_name(0))
+else:
+    print("Aucun GPU détecté")
 EOF
 
 # --- Fonction installation ---
@@ -110,14 +125,29 @@ echo "📦 Installation des dépendances..."
 
 check_and_install numpy numpy
 check_and_install onnx onnx
-check_and_install ultralytics ultralytics
+
+# --- YOLO (adapté Jetson) ---
+echo "🤖 Installation YOLO..."
+
+if (( JETPACK_VERSION == 5 )); then
+    pip install ultralytics
+else
+    echo "⚠️ JetPack 4 → version compatible YOLO"
+    pip install ultralytics==8.0.20 || pip install yolov5
+fi
 
 # --- Test final YOLO ---
 echo "🧪 Test YOLO..."
 python - <<EOF
-from ultralytics import YOLO
-model = YOLO("yolov8n.pt")
-print("✅ YOLO prêt !")
+try:
+    from ultralytics import YOLO
+    model = YOLO("yolov8n.pt")
+    print("✅ YOLOv8 prêt !")
+except:
+    print("⚠️ Fallback YOLOv5")
+    import torch
+    model = torch.hub.load('ultralytics/yolov5', 'yolov5n')
+    print("✅ YOLOv5 prêt !")
 EOF
 
 echo ""
@@ -134,6 +164,4 @@ read -p "🔄 Redémarrer maintenant ? (y/n): " REBOOT
 if [[ "$REBOOT" == "y" ]]; then
     sudo reboot
 fi
-
-
-# --- Service à lancer ( Programme global de la solution)
+```
